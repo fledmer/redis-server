@@ -91,7 +91,7 @@ func redisMessageDistributor(command string) (calculator func(args ...string) (r
 }
 
 func pingHandler(args ...string) (resp string) {
-	return "+pong\r\n"
+	return "+PONG\r\n"
 }
 
 func unknownHandler(args ...string) (resp string) {
