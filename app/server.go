@@ -51,7 +51,7 @@ func (s *server) Run(ctx context.Context) error {
 				continue
 			}
 			println("requets is", string(buff[:]))
-			PushMessage(string(buff))
+			PushRedisMessage(string(buff))
 			newConnect.Close()
 		}
 	}
@@ -60,6 +60,30 @@ func (s *server) Run(ctx context.Context) error {
 func (s *server) runConnectionLoop(ctx context.Context, conChan chan connection, listener net.Listener) {
 	con, err := listener.Accept()
 	conChan <- connection{con, err}
+}
+
+func PushRedisMessage(args ...string) (resp string) {
+	if len(args) < 1 {
+		return ""
+	}
+	return redisMessageDistributor(args[0])(args...)
+}
+
+func redisMessageDistributor(command string) (calculator func(args ...string) (resp string)) {
+	switch command {
+	case "PING":
+		return pingHandler
+	default:
+		return unknownHandler
+	}
+}
+
+func pingHandler(args ...string) (resp string) {
+	return "PONG"
+}
+
+func unknownHandler(args ...string) (resp string) {
+	return ""
 }
 
 func main() {
