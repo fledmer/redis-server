@@ -68,7 +68,7 @@ func (s *server) HandleConnect(connect connection) {
 		println("requets is", request)
 		resp := PushRedisMessage(strings.Split(request, "/r/n")...)
 		println("responce is", resp)
-		writed, err := connect.Write([]byte(resp + "\n"))
+		writed, err := connect.Write([]byte(resp))
 		if err != nil {
 			println(err.Error())
 		}
