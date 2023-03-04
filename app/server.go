@@ -66,9 +66,9 @@ func (s *server) HandleConnect(connect connection) {
 		}
 		request := string(buff[:n])
 		println("requets is", request)
-		resp := PushRedisMessage(strings.Split(request, " ")...)
+		resp := PushRedisMessage(strings.Split(request, "/r/n")...)
 		println("responce is", resp)
-		writed, err := connect.Write([]byte(resp))
+		writed, err := connect.Write([]byte(resp + "\n"))
 		if err != nil {
 			println(err.Error())
 		}
@@ -85,15 +85,13 @@ func PushRedisMessage(args ...string) (resp string) {
 
 func redisMessageDistributor(command string) (calculator func(args ...string) (resp string)) {
 	switch command {
-	case "PING":
-		return pingHandler
 	default:
-		return unknownHandler
+		return pingHandler
 	}
 }
 
 func pingHandler(args ...string) (resp string) {
-	return "PONG"
+	return "+pong\r\n"
 }
 
 func unknownHandler(args ...string) (resp string) {
