@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 )
 
@@ -36,30 +37,43 @@ func (s *server) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case newConnect := <-conChan:
-			if newConnect.error != nil {
-				//println(newConnect.Error())
-				newConnect.Close()
-				continue
-			}
-			buff := make([]byte, 2048)
-			fmt.Println("Get ", newConnect.RemoteAddr())
-			_, err := newConnect.Read(buff)
-			if err != nil {
-				//fmt.Println(err)
-				newConnect.Close()
-				continue
-			}
-			println("requets is", string(buff[:]))
-			PushRedisMessage(string(buff))
-			newConnect.Close()
+		case connect := <-conChan:
+			s.HandleConnect(connect)
 		}
 	}
 }
 
 func (s *server) runConnectionLoop(ctx context.Context, conChan chan connection, listener net.Listener) {
-	con, err := listener.Accept()
-	conChan <- connection{con, err}
+	for {
+		con, err := listener.Accept()
+		conChan <- connection{con, err}
+	}
+}
+
+func (s *server) HandleConnect(connect connection) {
+	defer connect.Close()
+	if connect.error != nil {
+		//println(connect.Error())
+		return
+	}
+	buff := make([]byte, 256)
+	fmt.Println("Get ", connect.RemoteAddr())
+	for {
+		n, err := connect.Read(buff)
+		if err != nil {
+			//fmt.Println(err)
+			return
+		}
+		request := string(buff[:n])
+		println("requets is", request)
+		resp := PushRedisMessage(strings.Split(request, " ")...)
+		println("responce is", resp)
+		writed, err := connect.Write([]byte(resp))
+		if err != nil {
+			println(err.Error())
+		}
+		println("Writed in responce: ", writed)
+	}
 }
 
 func PushRedisMessage(args ...string) (resp string) {
