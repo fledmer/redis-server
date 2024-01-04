@@ -8,16 +8,18 @@ import (
 	"sync"
 )
 
-type server struct {
-}
-
 type connection struct {
 	net.Conn
 	error
 }
 
-var redisServerObj *server
-var redisServerOnce sync.Once
+var (
+	redisServerObj  *server
+	redisServerOnce sync.Once
+)
+
+type server struct {
+}
 
 func getServer() *server {
 	redisServerOnce.Do(func() {
@@ -28,6 +30,7 @@ func getServer() *server {
 
 func (s *server) Run(ctx context.Context) error {
 	listener, err := net.Listen("tcp", "0.0.0.0:6379")
+	defer listener.Close()
 	if err != nil {
 		return err
 	}
@@ -53,10 +56,10 @@ func (s *server) runConnectionLoop(ctx context.Context, conChan chan connection,
 func (s *server) HandleConnect(connect connection) {
 	defer connect.Close()
 	if connect.error != nil {
-		//println(connect.Error())
+		//fmt.Println(connect.Error())
 		return
 	}
-	buff := make([]byte, 256)
+	buff := make([]byte, 2048)
 	fmt.Println("Get ", connect.RemoteAddr())
 	for {
 		n, err := connect.Read(buff)
@@ -64,41 +67,14 @@ func (s *server) HandleConnect(connect connection) {
 			//fmt.Println(err)
 			return
 		}
-		request := string(buff[:n])
-		println("requets is", request)
-		resp := PushRedisMessage(strings.Split(request, "/r/n")...)
-		println("responce is", resp)
-		writed, err := connect.Write([]byte(resp))
+		requests := strings.Split(string(buff[:n]), "/r/n")
+		fmt.Println("requets is", requests)
+		//resp := processRedisMessages(requests)
+		//fmt.Println("responce is", resp)
+		//writed, err := connect.Write([]byte(resp))
 		if err != nil {
-			println(err.Error())
+			fmt.Println(err.Error())
 		}
-		println("Writed in responce: ", writed)
+		//fmt.Println("Writed in responce: ", writed)
 	}
-}
-
-func PushRedisMessage(args ...string) (resp string) {
-	if len(args) < 1 {
-		return ""
-	}
-	return redisMessageDistributor(args[0])(args...)
-}
-
-func redisMessageDistributor(command string) (calculator func(args ...string) (resp string)) {
-	switch command {
-	default:
-		return pingHandler
-	}
-}
-
-func pingHandler(args ...string) (resp string) {
-	return "+PONG\r\n"
-}
-
-func unknownHandler(args ...string) (resp string) {
-	return ""
-}
-
-func main() {
-	println("starting")
-	getServer().Run(context.Background())
 }
