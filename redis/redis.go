@@ -1,43 +1,38 @@
 package redis
 
-type state struct {
+import (
+	"redis-server/redis/memory_storage"
+	"redis-server/redis/processor"
+)
+
+type MessageProcessor interface {
+	ProcessMessages(string) string
+}
+
+type Server struct {
+}
+
+func NewServer() *Server {
+	processor.InitStorage(memory_storage.New())
+	return &Server{}
+}
+
+func (s *Server) NewSession() *Session {
+	return &Session{
+		processor: processor.NewProcessor(),
+	}
 }
 
 type Session struct {
-	state state
+	processor MessageProcessor
 }
 
 func NewSession() *Session {
-	return &Session{}
-}
-
-func (s *Session) ProcessMessages(args []string) (resp string) {
-	if len(args) == 0 {
-		return ""
-	}
-
-	return redisMessageDistributor(args[0])(args...)
-}
-
-// * - array $ - string
-func isArray(args []string) bool {
-	if args[0][0] == '*' {
-		return true
-	}
-	return false
-}
-
-func redisMessageDistributor(command string) (calculator func(args ...string) (resp string)) {
-	switch command {
-	default:
-		return pingHandler
+	return &Session{
+		processor: processor.NewProcessor(),
 	}
 }
 
-func pingHandler(args ...string) (resp string) {
-	return "+PONG\r\n"
-}
-
-func unknownHandler(args ...string) (resp string) {
-	return ""
+func (s *Session) Process(message string) string {
+	return s.processor.ProcessMessages(message)
 }

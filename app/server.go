@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"strings"
+	"redis-server/redis"
 	"sync"
 )
 
@@ -19,11 +19,14 @@ var (
 )
 
 type server struct {
+	server *redis.Server
 }
 
 func getServer() *server {
 	redisServerOnce.Do(func() {
-		redisServerObj = &server{}
+		redisServerObj = &server{
+			server: redis.NewServer(),
+		}
 	})
 	return redisServerObj
 }
@@ -61,20 +64,20 @@ func (s *server) HandleConnect(connect connection) {
 	}
 	buff := make([]byte, 2048)
 	fmt.Println("Get ", connect.RemoteAddr())
+	session := s.server.NewSession()
 	for {
 		n, err := connect.Read(buff)
 		if err != nil {
 			//fmt.Println(err)
 			return
 		}
-		requests := strings.Split(string(buff[:n]), "/r/n")
-		fmt.Println("requets is", requests)
-		//resp := processRedisMessages(requests)
-		//fmt.Println("responce is", resp)
-		//writed, err := connect.Write([]byte(resp))
+		rawRequest := buff[:n]
+		fmt.Println("requets is", string(rawRequest))
+		resp := session.Process(string(rawRequest))
+		fmt.Println("responce is", resp)
+		_, err = connect.Write([]byte(resp))
 		if err != nil {
-			fmt.Println(err.Error())
+			fmt.Println("Error!", err.Error())
 		}
-		//fmt.Println("Writed in responce: ", writed)
 	}
 }
