@@ -7,16 +7,8 @@ import (
 	"sync"
 )
 
-/*
-*2
-$5
-myKEY
-$5
-HELLO
-*/
-
 type MessageProcessor interface {
-	ProcessMessages([]string) (string, MessageProcessor, []string, error)
+	ProcessMessages([]string) (ReturnValue, MessageProcessor, []string, error)
 }
 
 type Storage interface {
@@ -46,6 +38,18 @@ func NewProcessor() *facade {
 	}
 }
 
+type ReturnValue struct {
+	Raw       []string
+	Processed []string
+}
+
+func (r ReturnValue) Plus(ar ReturnValue) ReturnValue {
+	return ReturnValue{
+		Raw:       append(r.Raw, ar.Raw...),
+		Processed: append(r.Processed, ar.Processed...),
+	}
+}
+
 type facade struct {
 	processor MessageProcessor
 }
@@ -55,22 +59,32 @@ func (f *facade) ProcessMessages(messages string) string {
 	if len(messagesSlice) > 1 {
 		messagesSlice = messagesSlice[:len(messagesSlice)-1]
 	}
-	resp, processor, _, err := f.processor.ProcessMessages(messagesSlice)
-	if err != nil {
-		return errorToMessage(err)
+	var (
+		resp      ReturnValue
+		fullResp  ReturnValue
+		err       error
+		processor MessageProcessor
+	)
+	for len(messagesSlice) != 0 {
+		resp, processor, messagesSlice, err = f.processor.ProcessMessages(messagesSlice)
+		if err != nil {
+			return errorToMessage(err)
+		}
+		fullResp = fullResp.Plus(resp)
+		f.processor = processor
 	}
-	f.processor = processor
-	return resp
+
+	return strings.Join(fullResp.Processed, "")
 }
 
 // Добавить Context в котором будет все для запрсов, напирмер Хранилище
 type baseParser struct {
 }
 
-func (i *baseParser) ProcessMessages(messages []string) (string, MessageProcessor, []string, error) {
+func (i *baseParser) ProcessMessages(messages []string) (ReturnValue, MessageProcessor, []string, error) {
 	processor, messages, err := findProcessor(messages)
 	if err != nil {
-		return "", nil, nil, err
+		return ReturnValue{}, nil, nil, err
 	}
 	return processor.ProcessMessages(messages)
 }
@@ -86,73 +100,63 @@ func newArrayProcessor(count int) *arrayParser {
 	}
 }
 
-func (ap *arrayParser) ProcessMessages(messages []string) (string, MessageProcessor, []string, error) {
+func (ap *arrayParser) ProcessMessages(messages []string) (ReturnValue, MessageProcessor, []string, error) {
 	var (
-		processor MessageProcessor
+		processor MessageProcessor = &baseParser{}
 		err       error
-		resp      string
-		fullResp  string
+		resp      ReturnValue
+		fullResp  ReturnValue
 	)
-	for len(messages) != 0 {
-		resp, processor, messages, err = (&commandProcessor{}).ProcessMessages(messages)
+	messagesSlice := messages[:ap.count*2]
+	for len(messagesSlice) != 0 {
+		resp, processor, messagesSlice, err = (processor).ProcessMessages(messagesSlice)
 		if err != nil {
-			return "", nil, nil, err
+			return ReturnValue{}, nil, nil, err
 		}
-		fullResp += resp
+		fullResp = fullResp.Plus(resp)
 	}
-	return fullResp, processor, messages, nil
+	return fullResp, processor, messages[ap.count*2:], nil
 }
 
 type bulkStringParser struct {
 }
 
-func (bsp *bulkStringParser) ProcessMessages(messages []string) (string, MessageProcessor, []string, error) {
-	return messages[0], defaultParser, messages[1:], nil
-}
-
-type commandOrStringProcessor struct {
-}
-
-func (cp *commandOrStringProcessor) ProcessMessages(messages []string) (string, MessageProcessor, []string, error) {
-	resp, processor, messages, err := (&commandProcessor{}).ProcessMessages(messages)
-	if err != nil {
-		return (&bulkStringParser{}).ProcessMessages(messages)
-	}
-	return resp, processor, messages, nil
+func (bsp *bulkStringParser) ProcessMessages(messages []string) (ReturnValue, MessageProcessor, []string, error) {
+	return ReturnValue{
+		Raw: []string{messages[0]},
+	}, defaultParser, messages[1:], nil
 }
 
 type commandProcessor struct {
 }
 
-func (cp *commandProcessor) ProcessMessages(messages []string) (string, MessageProcessor, []string, error) {
-	if messages[0][0] != '$' {
-		return "", nil, messages, errors.New("failed to parse")
-	}
-	if len(messages) == 1 {
-		return "", nil, messages, errors.New("failed to parse")
-	}
-	switch messages[1] {
+func (cp *commandProcessor) ProcessMessages(messages []string) (ReturnValue, MessageProcessor, []string, error) {
+	switch messages[0] {
 	case "PING":
 		//TODO: maybe move ping logic to own struct
-		return simpleString("PONG"), defaultParser, messages[2:], nil
+		return ReturnValue{
+			Processed: []string{simpleString("PONG")},
+		}, defaultParser, messages[1:], nil
 	case "ECHO":
-		return (&echoCommand{}).ProcessMessages(messages[2:])
+		return (&echoCommand{}).ProcessMessages(messages[1:])
 	case "SET":
-		return (&setCommand{}).ProcessMessages(messages[2:])
+		return (&setCommand{}).ProcessMessages(messages[1:])
 	case "GET":
-		return (&getCommand{}).ProcessMessages(messages[2:])
+		return (&getCommand{}).ProcessMessages(messages[1:])
 	default:
-		return "", nil, messages[2:], errors.New("failed to parse")
+		return ReturnValue{}, nil, messages[:], UnknownCommandErr{}
 	}
 }
 
 type echoCommand struct {
 }
 
-func (p *echoCommand) ProcessMessages(messages []string) (string, MessageProcessor, []string, error) {
-	resp, proc, messages, err := (&bulkStringParser{}).ProcessMessages(messages[1:])
-	resp = simpleString(resp)
-	return resp, proc, messages, err
+func (p *echoCommand) ProcessMessages(messages []string) (ReturnValue, MessageProcessor, []string, error) {
+	message, proc, messages, err := (&bulkStringParser{}).ProcessMessages(messages[1:])
+	return ReturnValue{
+		Raw:       []string{message.Raw[0]},
+		Processed: []string{simpleString(message.Raw[0])},
+	}, proc, messages, err
 }
 
 type setCommand struct {
@@ -167,69 +171,59 @@ type setCommand struct {
 	params []string
 }
 
-func (s *setCommand) ProcessMessages(messages []string) (string, MessageProcessor, []string, error) {
-	if s.state == 2 {
-		GetStorage().Set(s.key, s.value)
-		return simpleString("OK"), defaultParser, nil, nil
-	}
-	processor, messages, err := findProcessor(messages)
-	if err != nil {
-		return "", nil, messages, err
-	}
+func (s *setCommand) ProcessMessages(messages []string) (ReturnValue, MessageProcessor, []string, error) {
 	if s.state == 0 {
-		switch processor.(type) {
-		case *commandProcessor:
-			message, _, messages, err := (&bulkStringParser{}).ProcessMessages(messages)
-			if err != nil {
-				return "", nil, messages, err
-			}
-			//FIXME: check key
-			s.key = message
-			s.state = 1
-			return s.ProcessMessages(messages)
-		default:
-			return "", nil, nil, errors.New("failed to parse")
+		resp, messages, err := parseArgument(messages)
+		if err != nil {
+			return resp, defaultParser, messages, err
 		}
+		//FIXME: CHECK KEY
+		s.key = resp.Raw[0]
+		s.state = 1
+		return s.ProcessMessages(messages)
 	} else if s.state == 1 {
-		switch processor.(type) {
-		case *commandProcessor:
-			message, _, messages, err := (&bulkStringParser{}).ProcessMessages(messages)
-			if err != nil {
-				return "", nil, messages, err
-			}
-			//FIXME: check key
-			s.value = message
-			s.state = 2
-			return s.ProcessMessages(messages)
-		default:
-			return "", nil, nil, errors.New("failed to parse")
+		resp, messages, err := parseArgument(messages)
+		if err != nil {
+			return resp, defaultParser, messages, err
 		}
+		//FIXME: CHECK VALUE
+		s.value = resp.Raw[0]
+		s.state = 2
+		return s.ProcessMessages(messages)
+	} else if s.state == 2 {
+		GetStorage().Set(s.key, s.value)
+		return ReturnValue{
+			Raw:       []string{"OK"},
+			Processed: []string{simpleString("OK")},
+		}, defaultParser, nil, nil
 	}
-	panic("state error")
-	return simpleString(messages[0]), defaultParser, messages[1:], nil
+	return ReturnValue{}, defaultParser, messages[1:], nil
 }
 
 type getCommand struct {
 }
 
-func (s *getCommand) ProcessMessages(messages []string) (string, MessageProcessor, []string, error) {
+func (s *getCommand) ProcessMessages(messages []string) (ReturnValue, MessageProcessor, []string, error) {
 	processor, messages, err := findProcessor(messages)
 	if err != nil {
-		return "", nil, messages, err
+		return ReturnValue{}, nil, messages, err
 	}
 	switch processor.(type) {
 	case *commandProcessor:
 		message, _, messages, err := (&bulkStringParser{}).ProcessMessages(messages)
 		if err != nil {
-			return "", nil, messages, err
+			return ReturnValue{}, nil, messages, err
 		}
-		val, find := GetStorage().Get(message)
+		val, find := GetStorage().Get(message.Raw[0])
 		if !find {
 			val = "-1"
 		}
-		return simpleString(val.(string)), &baseParser{}, messages, nil
+		return ReturnValue{
+			Raw:       []string{val.(string)},
+			Processed: []string{simpleString(val.(string))},
+		}, &baseParser{}, messages, nil
 	default:
-		return "", nil, nil, errors.New("failed to parse")
+		return ReturnValue{}, nil, nil, errors.New("failed to parse")
 	}
 }
 
@@ -243,6 +237,9 @@ func simpleString(raw string) string {
 
 // * - array $ - string
 func findProcessor(messages []string) (MessageProcessor, []string, error) {
+	if len(messages) == 0 || len(messages[0]) == 0 {
+		return nil, nil, errors.New("failed to parse")
+	}
 	switch messages[0][0] {
 	case '*':
 		count, err := strconv.Atoi(messages[0][1:])
@@ -253,6 +250,7 @@ func findProcessor(messages []string) (MessageProcessor, []string, error) {
 	case '$':
 		return &commandProcessor{}, messages[1:], nil
 	default:
+		//FIXME:
 		return &commandProcessor{}, messages, nil
 	}
 }
@@ -264,3 +262,25 @@ func errorToMessage(err error) string {
 	builder.WriteString("\r\n")
 	return builder.String()
 }
+
+func parseArgument(messages []string) (ReturnValue, []string, error) {
+	processor, messages, err := findProcessor(messages)
+	if err != nil {
+		return ReturnValue{}, messages, err
+	}
+	switch p := processor.(type) {
+	case *commandProcessor:
+		resp, _, messages, err := p.ProcessMessages(messages)
+		if errors.Is(err, UnknownCommandErr{}) {
+			resp, _, messages, err = (&bulkStringParser{}).ProcessMessages(messages)
+		}
+		return resp, messages, err
+	case *bulkStringParser:
+		resp, _, messages, err := (&bulkStringParser{}).ProcessMessages(messages)
+		return resp, messages, err
+	default:
+		return ReturnValue{}, messages, errors.New("failed to parse")
+	}
+}
+
+//TODO: нужно возвращать из процессора не просто строку, а структуру внутри которой будут аргументы RAW аргументы и возможность спарсить их
