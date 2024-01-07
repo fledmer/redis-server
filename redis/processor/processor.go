@@ -51,7 +51,11 @@ type facade struct {
 }
 
 func (f *facade) ProcessMessages(messages string) string {
-	resp, processor, _, err := f.processor.ProcessMessages(strings.Split(messages, "\r\n"))
+	messagesSlice := strings.Split(messages, "\r\n")
+	if len(messagesSlice) > 1 {
+		messagesSlice = messagesSlice[:len(messagesSlice)-1]
+	}
+	resp, processor, _, err := f.processor.ProcessMessages(messagesSlice)
 	if err != nil {
 		return errorToMessage(err)
 	}
@@ -86,35 +90,17 @@ func (ap *arrayParser) ProcessMessages(messages []string) (string, MessageProces
 	var (
 		processor MessageProcessor
 		err       error
-		rawResp   string
+		resp      string
+		fullResp  string
 	)
-	for element := 0; element < ap.count; element++ {
-		processor, messages, err = findProcessor(messages)
-		if err != nil {
-			return "", nil, nil, err
-		}
-		rawResp, _, messages, err = processor.ProcessMessages(messages)
-		if err != nil {
-			return "", nil, nil, err
-		}
-		ap.commands = append(ap.commands, rawResp)
-	}
-
-	var (
-		message string
-	)
-	processor = defaultParser
-	resp := strings.Builder{}
-	messages = ap.commands
 	for len(messages) != 0 {
-		message, processor, messages, err = processor.ProcessMessages(messages)
+		resp, processor, messages, err = (&commandProcessor{}).ProcessMessages(messages)
 		if err != nil {
 			return "", nil, nil, err
 		}
-		resp.WriteString(message)
+		fullResp += resp
 	}
-	//processor.ProcessMessages([]string{"end"})
-	return resp.String(), processor, messages, err
+	return fullResp, processor, messages, nil
 }
 
 type bulkStringParser struct {
@@ -124,19 +110,39 @@ func (bsp *bulkStringParser) ProcessMessages(messages []string) (string, Message
 	return messages[0], defaultParser, messages[1:], nil
 }
 
-type commandParser struct {
+type commandOrStringProcessor struct {
 }
 
-func (bsp *commandParser) ProcessMessages(messages []string) (string, MessageProcessor, []string, error) {
-	switch messages[0] {
+func (cp *commandOrStringProcessor) ProcessMessages(messages []string) (string, MessageProcessor, []string, error) {
+	resp, processor, messages, err := (&commandProcessor{}).ProcessMessages(messages)
+	if err != nil {
+		return (&bulkStringParser{}).ProcessMessages(messages)
+	}
+	return resp, processor, messages, nil
+}
+
+type commandProcessor struct {
+}
+
+func (cp *commandProcessor) ProcessMessages(messages []string) (string, MessageProcessor, []string, error) {
+	if messages[0][0] != '$' {
+		return "", nil, messages, errors.New("failed to parse")
+	}
+	if len(messages) == 1 {
+		return "", nil, messages, errors.New("failed to parse")
+	}
+	switch messages[1] {
 	case "PING":
-		return simpleString("PONG"), defaultParser, messages[1:], nil
+		//TODO: maybe move ping logic to own struct
+		return simpleString("PONG"), defaultParser, messages[2:], nil
 	case "ECHO":
-		return "", &echoCommand{}, messages[1:], nil
+		return (&echoCommand{}).ProcessMessages(messages[2:])
 	case "SET":
-		return "", &setCommand{}, messages[1:], nil
+		return (&setCommand{}).ProcessMessages(messages[2:])
+	case "GET":
+		return (&getCommand{}).ProcessMessages(messages[2:])
 	default:
-		return "", nil, nil, errors.New("failed to parse")
+		return "", nil, messages[2:], errors.New("failed to parse")
 	}
 }
 
@@ -144,7 +150,9 @@ type echoCommand struct {
 }
 
 func (p *echoCommand) ProcessMessages(messages []string) (string, MessageProcessor, []string, error) {
-	return simpleString(messages[0]), defaultParser, messages[1:], nil
+	resp, proc, messages, err := (&bulkStringParser{}).ProcessMessages(messages[1:])
+	resp = simpleString(resp)
+	return resp, proc, messages, err
 }
 
 type setCommand struct {
@@ -162,16 +170,16 @@ type setCommand struct {
 func (s *setCommand) ProcessMessages(messages []string) (string, MessageProcessor, []string, error) {
 	if s.state == 2 {
 		GetStorage().Set(s.key, s.value)
-		return simpleString("OK"), defaultParser, messages, nil
+		return simpleString("OK"), defaultParser, nil, nil
 	}
 	processor, messages, err := findProcessor(messages)
 	if err != nil {
 		return "", nil, messages, err
 	}
 	if s.state == 0 {
-		switch p := processor.(type) {
-		case *bulkStringParser:
-			message, _, _, err := p.ProcessMessages(messages)
+		switch processor.(type) {
+		case *commandProcessor:
+			message, _, messages, err := (&bulkStringParser{}).ProcessMessages(messages)
 			if err != nil {
 				return "", nil, messages, err
 			}
@@ -183,9 +191,9 @@ func (s *setCommand) ProcessMessages(messages []string) (string, MessageProcesso
 			return "", nil, nil, errors.New("failed to parse")
 		}
 	} else if s.state == 1 {
-		switch p := processor.(type) {
-		case *bulkStringParser:
-			message, _, _, err := p.ProcessMessages(messages)
+		switch processor.(type) {
+		case *commandProcessor:
+			message, _, messages, err := (&bulkStringParser{}).ProcessMessages(messages)
 			if err != nil {
 				return "", nil, messages, err
 			}
@@ -199,6 +207,30 @@ func (s *setCommand) ProcessMessages(messages []string) (string, MessageProcesso
 	}
 	panic("state error")
 	return simpleString(messages[0]), defaultParser, messages[1:], nil
+}
+
+type getCommand struct {
+}
+
+func (s *getCommand) ProcessMessages(messages []string) (string, MessageProcessor, []string, error) {
+	processor, messages, err := findProcessor(messages)
+	if err != nil {
+		return "", nil, messages, err
+	}
+	switch processor.(type) {
+	case *commandProcessor:
+		message, _, messages, err := (&bulkStringParser{}).ProcessMessages(messages)
+		if err != nil {
+			return "", nil, messages, err
+		}
+		val, find := GetStorage().Get(message)
+		if !find {
+			val = "-1"
+		}
+		return simpleString(val.(string)), &baseParser{}, messages, nil
+	default:
+		return "", nil, nil, errors.New("failed to parse")
+	}
 }
 
 func simpleString(raw string) string {
@@ -219,9 +251,9 @@ func findProcessor(messages []string) (MessageProcessor, []string, error) {
 		}
 		return &arrayParser{count: count}, messages[1:], nil
 	case '$':
-		return &bulkStringParser{}, messages[1:], nil
+		return &commandProcessor{}, messages[1:], nil
 	default:
-		return &commandParser{}, messages, nil
+		return &commandProcessor{}, messages, nil
 	}
 }
 

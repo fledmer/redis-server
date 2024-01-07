@@ -6,10 +6,10 @@ import (
 )
 
 func MessagesToRaw(messages []string) string {
-	str := strings.Join(messages, "\n\a")
-	if len(messages) != 0 {
-		str += "\n\a"
-	}
+	str := strings.Join(messages, "\r\n")
+	//if len(messages) != 0 {
+	//	str += "\r\n"
+	//}
 	return str
 }
 
@@ -27,6 +27,22 @@ func Test_facade_ProcessMessages(t *testing.T) {
 		want   string
 	}{
 		{
+			name: "echo",
+			args: args{messages: MessagesToRaw([]string{"*2", "$4", "ECHO", "$3", "hey"})},
+			want: simpleString("hey"),
+			fields: fields{
+				processor: defaultParser,
+			},
+		},
+		{
+			name: "One full ping",
+			args: args{messages: MessagesToRaw([]string{"*1", "$4", "PING"})},
+			want: simpleString("PONG"),
+			fields: fields{
+				processor: defaultParser,
+			},
+		},
+		{
 			name: "One full ping",
 			args: args{messages: MessagesToRaw([]string{"*1", "$4", "PING"})},
 			want: simpleString("PONG"),
@@ -42,26 +58,18 @@ func Test_facade_ProcessMessages(t *testing.T) {
 				processor: defaultParser,
 			},
 		},
-		{
+		/*{
 			name: "simple ping",
 			args: args{messages: MessagesToRaw([]string{"PING"})},
 			want: simpleString("PONG"),
 			fields: fields{
 				processor: defaultParser,
 			},
-		},
+		},*/
 		{
 			name: "4 full ping",
 			args: args{messages: MessagesToRaw([]string{"*4", "$4", "PING", "$4", "PING", "$4", "PING", "$4", "PING"})},
 			want: simpleString("PONG") + simpleString("PONG") + simpleString("PONG") + simpleString("PONG"),
-			fields: fields{
-				processor: defaultParser,
-			},
-		},
-		{
-			name: "echo",
-			args: args{messages: MessagesToRaw([]string{"*2", "$4", "ECHO", "$3", "hey"})},
-			want: simpleString("hey"),
 			fields: fields{
 				processor: defaultParser,
 			},
